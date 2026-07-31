@@ -1,4 +1,6 @@
 const express = require('express');
+const https = require('https');
+const fs = require('fs');
 const session = require('express-session');
 const path = require('path');
 const db = require('./db');
@@ -21,7 +23,7 @@ app.use(session({
     resave: false,
     saveUninitialized: false,
     cookie: {
-        secure: false, // Running behind localhost / Docker
+        secure: true,
         maxAge: 1000 * 60 * 60 * 24 * 7 // 1 week
     }
 }));
@@ -36,7 +38,11 @@ app.get('/health', (req, res) => {
 });
 
 // Start server
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[CD-Display] Server running on port ${PORT}`);
+const sslOptions = {
+    key: fs.readFileSync(process.env.SSL_KEY || '/app/certs/key.pem'),
+    cert: fs.readFileSync(process.env.SSL_CERT || '/app/certs/cert.pem'),
+};
+https.createServer(sslOptions, app).listen(PORT, '0.0.0.0', () => {
+    console.log(`[CD-Display] Server running on https://0.0.0.0:${PORT}`);
     console.log(`[CD-Display] Setup complete: ${db.isSetupComplete()}`);
 });
