@@ -102,7 +102,7 @@ async function loadSettings() {
                 document.getElementById('setting-sleep').value = settings.sleepTimeout;
                 updateSleepTimeout(settings.sleepTimeout);
             }
-            if (settings.useAiVision === 'true') {
+            if (settings.useAiVision === true || settings.useAiVision === 'true') {
                 document.getElementById('config-ai-toggle').checked = true;
                 document.getElementById('ai-settings-container').style.display = 'block';
             }
