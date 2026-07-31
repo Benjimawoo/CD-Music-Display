@@ -163,7 +163,12 @@
                                     <option value="gemini">Google Gemini</option>
                                     <option value="openai">OpenAI</option>
                                     <option value="claude">Anthropic Claude</option>
+                                    <option value="azure">Azure AI Foundry</option>
                                 </select>
+                            </div>
+                            <div class="config-field" id="ai-endpoint-field" style="display: none;">
+                                <label for="config-ai-endpoint">Endpoint URL</label>
+                                <input type="url" id="config-ai-endpoint" placeholder="https://<resource>.cognitiveservices.azure.com/..." autocomplete="off" spellcheck="false">
                             </div>
                             <div class="config-field">
                                 <label for="config-ai-key">API Key</label>

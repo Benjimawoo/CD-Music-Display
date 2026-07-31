@@ -161,7 +161,29 @@ async function fetchSpineWithAI(album, aiConfig) {
         const data = await res.json();
         if (data.error) throw new Error(data.error.message);
         jsonText = data.choices[0].message.content;
-    } 
+    }
+    else if (aiConfig.provider === 'azure') {
+        // Azure AI Foundry: OpenAI-compatible endpoint with api-key header
+        if (!aiConfig.endpoint) throw new Error('Azure AI Foundry endpoint URL is not configured');
+        const res = await fetch(aiConfig.endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'api-key': aiConfig.key },
+            body: JSON.stringify({
+                model: aiConfig.model,
+                response_format: { type: "json_object" },
+                messages: [{
+                    role: "user",
+                    content: [
+                        { type: "text", text: prompt },
+                        { type: "image_url", image_url: { url: `data:image/jpeg;base64,${base64}` } }
+                    ]
+                }]
+            })
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error.message);
+        jsonText = data.choices[0].message.content;
+    }
     else if (aiConfig.provider === 'gemini') {
         const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${aiConfig.model}:generateContent?key=${aiConfig.key}`, {
             method: 'POST',
@@ -290,7 +312,8 @@ async function processNextAlbum() {
                 result = await fetchSpineWithAI(targetAlbum, {
                     provider: config.aiProvider,
                     key: config.aiApiKey,
-                    model: config.aiModel
+                    model: config.aiModel,
+                    endpoint: config.aiEndpoint
                 });
             } catch (e) {
                 log(`AI Failed: ${e.message}. Falling back to Heuristics.`);

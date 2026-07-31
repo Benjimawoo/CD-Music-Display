@@ -4,7 +4,7 @@ services:
     container_name: cd-music-display
     restart: unless-stopped
     ports:
-      - "${PORT:-443}:3000"
+      - "${PORT:-3443}:3000"
     volumes:
       - ./data:/app/data
       - ./certs:/app/certs:ro

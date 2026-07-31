@@ -55,6 +55,9 @@ export async function initSettings() {
         saveSetting('useAiVision', e.target.checked ? 'true' : 'false');
     });
     document.getElementById('btn-save-ai').addEventListener('click', saveAiConfig);
+    document.getElementById('config-ai-provider').addEventListener('change', (e) => {
+        document.getElementById('ai-endpoint-field').style.display = e.target.value === 'azure' ? 'flex' : 'none';
+    });
     
     // Load existing settings & config
     await loadSettings();
@@ -180,10 +183,14 @@ async function loadAiConfig() {
         const res = await fetch('/api/config');
         if (res.ok) {
             const config = await res.json();
-            if (config.aiProvider) document.getElementById('config-ai-provider').value = config.aiProvider;
+            if (config.aiProvider) {
+                document.getElementById('config-ai-provider').value = config.aiProvider;
+                document.getElementById('ai-endpoint-field').style.display = config.aiProvider === 'azure' ? 'flex' : 'none';
+            }
             if (config.aiApiKey) document.getElementById('config-ai-key').placeholder = "••••••••••••••••";
             if (config.aiModel) document.getElementById('config-ai-model').value = config.aiModel;
             if (config.aiRateLimit) document.getElementById('config-ai-rate').value = config.aiRateLimit;
+            if (config.aiEndpoint) document.getElementById('config-ai-endpoint').value = config.aiEndpoint;
         }
     } catch (e) {
         console.warn("Failed to load AI config", e);
@@ -195,6 +202,7 @@ async function saveAiConfig() {
     const apiKey = document.getElementById('config-ai-key').value.trim();
     const model = document.getElementById('config-ai-model').value.trim();
     const rateLimit = document.getElementById('config-ai-rate').value.trim();
+    const endpoint = document.getElementById('config-ai-endpoint').value.trim();
     
     const notify = (msg, type) => import('./app.js').then(m => m.showNotification(msg, type));
     
@@ -203,6 +211,7 @@ async function saveAiConfig() {
         if (apiKey) await fetch('/api/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: 'aiApiKey', value: apiKey }) });
         if (model) await fetch('/api/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: 'aiModel', value: model }) });
         if (rateLimit) await fetch('/api/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: 'aiRateLimit', value: rateLimit }) });
+        if (endpoint) await fetch('/api/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: 'aiEndpoint', value: endpoint }) });
         
         notify('AI Configuration saved. Restart the container if worker is stuck.');
         document.getElementById('config-ai-key').value = '';
