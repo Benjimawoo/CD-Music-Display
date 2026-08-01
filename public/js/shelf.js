@@ -10,6 +10,9 @@ let vVelocity = 0;
 let isDragging = false;
 let startDragX = 0;
 let lastDragX = 0;
+let dragDistance = 0;
+let isCenterPoppedOut = true;
+let pendingPopOutIndex = null;
 let overlayHideTimeout = null;
 
 const SPINE_WIDTH = 28;
@@ -24,11 +27,16 @@ function notify(msg, type) {
 export async function initShelf() {
     const container = document.getElementById('shelf-container');
     
-    // Virtual Carousel Events
+    // Virtual Carousel Events - 1 album per notch on mouse wheel
     container.addEventListener('wheel', (e) => {
-        if (e.target.closest('.settings-content') || e.target.closest('.popover-menu')) return;
-        vVelocity -= e.deltaY * 0.5;
-        vVelocity -= e.deltaX * 0.5;
+        if (e.target.closest('.settings-content') || e.target.closest('.popover-menu') || e.target.closest('.settings-overlay')) return;
+        const delta = e.deltaY || e.deltaX;
+        if (Math.abs(delta) >= 15) {
+            const dir = Math.sign(delta);
+            vVelocity -= dir * ((SPINE_WIDTH + GAP) * 0.1);
+        } else {
+            vVelocity -= delta * 0.1;
+        }
         e.preventDefault();
     }, { passive: false });
     
@@ -37,6 +45,7 @@ export async function initShelf() {
         isDragging = true;
         startDragX = e.clientX;
         lastDragX = e.clientX;
+        dragDistance = 0;
         vVelocity = 0;
         container.style.cursor = 'grabbing';
     });
@@ -44,6 +53,7 @@ export async function initShelf() {
     window.addEventListener('pointermove', (e) => {
         if (isDragging) {
             const delta = e.clientX - lastDragX;
+            dragDistance += Math.abs(delta);
             vScrollX += delta;
             vVelocity = delta * 0.5; // impart some momentum
             lastDragX = e.clientX;
@@ -54,6 +64,19 @@ export async function initShelf() {
         if (isDragging) {
             isDragging = false;
             container.style.cursor = '';
+        }
+    });
+    
+    // Arrow keys navigation
+    window.addEventListener('keydown', (e) => {
+        if (['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName)) return;
+        const itemWidth = SPINE_WIDTH + GAP;
+        if (e.key === 'ArrowRight') {
+            vVelocity = -(itemWidth * 0.1);
+            e.preventDefault();
+        } else if (e.key === 'ArrowLeft') {
+            vVelocity = (itemWidth * 0.1);
+            e.preventDefault();
         }
     });
     
@@ -141,10 +164,25 @@ async function fetchSpine(el) {
         const res = await fetch(`/api/albums/${id}/spine?name=${encodeURIComponent(name)}&artist=${encodeURIComponent(artist)}`);
         if (res.ok) {
             const data = await res.json();
-            if (data.spineUrl) {
+            const w = Math.min(64, Math.max(26, parseInt(data.spineWidth) || 28));
+            el.dataset.width = w;
+            el.style.width = `${w}px`;
+            
+            const idx = parseInt(el.dataset.index);
+            if (!isNaN(idx) && allAlbums.length > 0) {
+                const realAlbum = allAlbums[idx % allAlbums.length];
+                if (realAlbum) {
+                    realAlbum.width = w;
+                    if (data.coverUrl) realAlbum.coverUrl = data.coverUrl;
+                }
+            }
+            
+            if (data.spineUrl && data.spineUrl !== '') {
                 el.style.backgroundImage = `url(${data.spineUrl})`;
-                el.dataset.spineType = data.spineType;
-                el.classList.add(`spine-type-${data.spineType}`);
+                const st = data.spineType || 'spine';
+                el.dataset.spineType = st;
+                el.classList.add(`spine-type-${st}`);
+                el.classList.add('has-authentic-spine');
             }
         }
     } catch(e) {
@@ -173,14 +211,41 @@ function renderShelf() {
     centerArt.id = 'center-box-art';
     centerBox.appendChild(centerArt);
     
-    // Inject the Glass Overlay Template
+    // Add Close / Fold-Away Button
+    const closeBtn = document.createElement('button');
+    closeBtn.id = 'close-center-btn';
+    closeBtn.title = 'Fold back into shelf';
+    closeBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width: 16px; height: 16px;"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
+    closeBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        isCenterPoppedOut = false;
+        pendingPopOutIndex = null;
+        centerBox.classList.add('folding-away');
+        setTimeout(() => {
+            centerBox.style.display = 'none';
+            centerBox.classList.remove('folding-away');
+            const overlay = centerBox.querySelector('.glass-controls-overlay');
+            if (overlay && !overlay.classList.contains('hidden')) {
+                overlay.classList.add('hidden');
+            }
+        }, 300);
+    });
+    
+    // Inject the Glass Overlay Template and place closeBtn inside it
     const template = document.getElementById('glass-overlay-template');
     if (template) {
         const overlayNode = template.content.cloneNode(true);
+        const overlayContainer = overlayNode.querySelector('.glass-controls-overlay');
+        if (overlayContainer) {
+            overlayContainer.appendChild(closeBtn);
+        }
         centerBox.appendChild(overlayNode);
+    } else {
+        centerBox.appendChild(closeBtn);
     }
     
     centerBox.addEventListener('click', (e) => {
+        if (dragDistance > 5) return;
         const overlay = centerBox.querySelector('.glass-controls-overlay');
         if (overlay) {
             // If clicking inside a control, don't toggle visibility
@@ -256,13 +321,32 @@ function renderShelf() {
         el.appendChild(text);
         
         el.addEventListener('click', () => {
-            // Smoothly scroll this item to center
-            const itemWidth = SPINE_WIDTH + GAP;
-            const diff = parseFloat(el.dataset.relativeFloat || 0);
+            if (dragDistance > 5) return;
             
-            // Because our friction is v *= 0.9, the total distance traveled is v / (1 - 0.9) = 10v
-            // So to travel exactly -diff * itemWidth, we set vVelocity to that distance / 10.
-            vVelocity = -diff * itemWidth * 0.1; 
+            const box = document.getElementById('static-center-box');
+            const diff = parseFloat(el.dataset.relativeFloat || 0);
+            const w = parseFloat(el.dataset.width || SPINE_WIDTH);
+            const idx = parseInt(el.dataset.index);
+            
+            // Reopen center pop-out box if it was closed
+            if (!isCenterPoppedOut || (box && box.style.display === 'none')) {
+                // If already at the center, open immediately
+                if (Math.abs(diff) < 0.2 && Math.abs(vVelocity) < 0.2) {
+                    isCenterPoppedOut = true;
+                    pendingPopOutIndex = null;
+                    if (box) {
+                        box.style.display = 'block';
+                        box.classList.add('folding-out');
+                        setTimeout(() => box.classList.remove('folding-out'), 300);
+                    }
+                } else {
+                    // Otherwise defer opening until the album scrolls to the middle
+                    pendingPopOutIndex = idx;
+                }
+            }
+            
+            // Smoothly scroll this item to center (scaled to universal scroll grid index distance)
+            vVelocity = -diff * (SPINE_WIDTH + GAP) * 0.1; 
         });
         
         spineObserver.observe(el);
@@ -317,49 +401,100 @@ function carouselLoop() {
             let centerItemIndex = snapC % allAlbums.length;
             if (centerItemIndex < 0) centerItemIndex += allAlbums.length;
             
+            // If waiting for clicked album to arrive in center before pop-out animation
+            if (pendingPopOutIndex !== null && !isDragging) {
+                let targetIndex = pendingPopOutIndex % allAlbums.length;
+                if (targetIndex < 0) targetIndex += allAlbums.length;
+                
+                // When we arrive close to the target center index and velocity has settled down
+                if (centerItemIndex === targetIndex && Math.abs(offset) < 0.35 && Math.abs(vVelocity) < 2.0) {
+                    pendingPopOutIndex = null;
+                    isCenterPoppedOut = true;
+                    const box = document.getElementById('static-center-box');
+                    if (box) {
+                        box.style.display = 'block';
+                        box.classList.add('folding-out');
+                        setTimeout(() => box.classList.remove('folding-out'), 300);
+                    }
+                }
+            }
+            if (isDragging) {
+                pendingPopOutIndex = null; // Cancel deferred open if user interrupts by dragging
+            }
+            
             // Update the static center box
             currentSelectedAlbum = allAlbums[centerItemIndex];
             const centerArt = document.getElementById('center-box-art');
             if (centerArt && currentSelectedAlbum) {
-                centerArt.style.backgroundImage = `url(${currentSelectedAlbum.image})`;
+                const displayCover = currentSelectedAlbum.image || currentSelectedAlbum.coverUrl;
+                centerArt.style.backgroundImage = `url(${displayCover})`;
             }
             
             const half = numAlbums / 2;
-            
-            spines.forEach((spine) => {
+            const spineItems = Array.from(spines).map(spine => {
                 const i = parseInt(spine.dataset.index);
-                
-                // Calculate discrete position relative to the current snapped center
                 let rel = i - snapC;
-                
-                // Wrap logic for infinite loop
                 while (rel > half) rel -= numAlbums;
                 while (rel < -half) rel += numAlbums;
-                
-                spine.dataset.relativeFloat = rel - offset; // For click-to-scroll tracking
-                
-                if (rel === 0) {
-                    // This is the active center item; hide it so the static box can show its cover
-                    spine.style.opacity = '0';
-                    spine.style.pointerEvents = 'none';
-                } else {
-                    spine.style.opacity = '1';
-                    spine.style.pointerEvents = 'auto';
-                    
-                    let x;
-                    if (rel > 0) {
-                        // Right block (slides left, behind the box)
-                        x = centerX + gapDist + (rel - 1 - offset) * itemWidth;
-                    } else {
-                        // Left block (slides left, out from behind the box)
-                        x = centerX - gapDist + (rel + 1 - offset) * itemWidth;
-                    }
-                    
-                    // Fixed width, pure 1D translation
-                    spine.style.left = `${x}px`;
-                    spine.style.width = `${SPINE_WIDTH}px`;
-                    spine.style.transform = `translate(-50%, -50%)`;
+                spine.dataset.relativeFloat = rel - offset;
+                const width = parseFloat(spine.dataset.width || SPINE_WIDTH);
+                return { spine, rel, width };
+            });
+
+            const centerObj = spineItems.find(item => item.rel === 0);
+            const rightList = spineItems.filter(item => item.rel > 0).sort((a, b) => a.rel - b.rel);
+            const leftList = spineItems.filter(item => item.rel < 0).sort((a, b) => b.rel - a.rel);
+
+            const centerW = centerObj ? centerObj.width : SPINE_WIDTH;
+            const avgSlideStep = centerW + GAP; 
+            const slideOffset = offset * avgSlideStep;
+
+            let curXRight, curXLeft;
+
+            const boxEl = document.getElementById('static-center-box');
+            const actuallyPopped = isCenterPoppedOut && (!boxEl || boxEl.style.display !== 'none');
+
+            if (actuallyPopped) {
+                if (centerObj) {
+                    centerObj.spine.style.opacity = '0';
+                    centerObj.spine.style.pointerEvents = 'none';
                 }
+                curXRight = centerX + (CENTER_WIDTH / 2) + GAP - slideOffset;
+                curXLeft = centerX - (CENTER_WIDTH / 2) - GAP - slideOffset;
+            } else {
+                if (centerObj) {
+                    centerObj.spine.style.opacity = '1';
+                    centerObj.spine.style.pointerEvents = 'auto';
+                    const x0 = centerX - slideOffset;
+                    centerObj.spine.style.left = `${x0}px`;
+                    centerObj.spine.style.width = `${centerObj.width}px`;
+                    centerObj.spine.style.transform = `translate(-50%, -50%)`;
+                }
+                const x0 = centerX - slideOffset;
+                curXRight = x0 + (centerW / 2) + GAP;
+                curXLeft = x0 - (centerW / 2) - GAP;
+            }
+
+            // Stack variable-width items outwards to the right
+            rightList.forEach(item => {
+                item.spine.style.opacity = '1';
+                item.spine.style.pointerEvents = 'auto';
+                const x = curXRight + (item.width / 2);
+                item.spine.style.left = `${x}px`;
+                item.spine.style.width = `${item.width}px`;
+                item.spine.style.transform = `translate(-50%, -50%)`;
+                curXRight += item.width + GAP;
+            });
+
+            // Stack variable-width items outwards to the left (-1, -2, -3...)
+            leftList.forEach(item => {
+                item.spine.style.opacity = '1';
+                item.spine.style.pointerEvents = 'auto';
+                const x = curXLeft - (item.width / 2);
+                item.spine.style.left = `${x}px`;
+                item.spine.style.width = `${item.width}px`;
+                item.spine.style.transform = `translate(-50%, -50%)`;
+                curXLeft -= (item.width + GAP);
             });
         }
     }

@@ -11,8 +11,10 @@ if (!fs.existsSync(dataDir)) {
 
 const db = new Database(path.join(dataDir, 'cd-music-display.db'));
 
-// Enable WAL mode for better concurrent access
-db.pragma('journal_mode = WAL');
+// Ensure atomic direct-to-disk writes to prevent data loss across Docker Windows volume mount restarts
+try { db.pragma('wal_checkpoint(TRUNCATE)'); } catch (e) {}
+db.pragma('journal_mode = DELETE');
+db.pragma('synchronous = FULL');
 
 // Initialize tables
 db.exec(`
@@ -39,15 +41,26 @@ db.exec(`
         spotify_id TEXT PRIMARY KEY,
         spine_url TEXT,
         spine_type TEXT,
+        spine_width INTEGER DEFAULT 28,
+        cover_url TEXT,
         last_checked DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 `);
 
 try {
     db.exec(`ALTER TABLE album_spines ADD COLUMN spine_type TEXT;`);
-} catch (e) {
-    // Column likely already exists
-}
+} catch (e) {}
+try {
+    db.exec(`ALTER TABLE album_spines ADD COLUMN spine_width INTEGER DEFAULT 28;`);
+} catch (e) {}
+try {
+    db.exec(`ALTER TABLE album_spines ADD COLUMN cover_url TEXT;`);
+} catch (e) {}
+
+// Clean up any previously cached invalid wide spine scans (>95px width) so worker re-processes them
+try {
+    db.exec(`UPDATE album_spines SET spine_url = '', spine_type = null, spine_width = 28 WHERE spine_width > 95;`);
+} catch (e) {}
 
 // ---------------------------------------------------------------------------
 // Config management (Spotify credentials, session secret, base URL)
@@ -203,11 +216,29 @@ module.exports = {
 
     // Spine cache
     getSpineCache: (spotifyId) => {
-        const row = db.prepare('SELECT spine_url, spine_type FROM album_spines WHERE spotify_id = ?').get(spotifyId);
-        return row ? { spineUrl: row.spine_url, spineType: row.spine_type } : null;
+        const row = db.prepare('SELECT spine_url, spine_type, spine_width, cover_url FROM album_spines WHERE spotify_id = ?').get(spotifyId);
+        return row ? { spineUrl: row.spine_url, spineType: row.spine_type, spineWidth: row.spine_width || 28, coverUrl: row.cover_url || null } : null;
     },
-    setSpineCache: (spotifyId, spineUrl, spineType = null) => {
-        db.prepare('INSERT OR REPLACE INTO album_spines (spotify_id, spine_url, spine_type, last_checked) VALUES (?, ?, ?, CURRENT_TIMESTAMP)').run(spotifyId, spineUrl || '', spineType);
+    setSpineCache: (spotifyId, spineUrl, spineType = null, spineWidth = 28, coverUrl = null) => {
+        const w = Math.min(64, Math.max(26, parseInt(spineWidth) || 28));
+        db.prepare('INSERT OR REPLACE INTO album_spines (spotify_id, spine_url, spine_type, spine_width, cover_url, last_checked) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)').run(spotifyId, spineUrl || '', spineType, w, coverUrl || null);
+    },
+    clearSpineCache: () => {
+        db.prepare('DELETE FROM album_spines').run();
+        try {
+            const files = fs.readdirSync(dataDir);
+            files.forEach(f => {
+                if (f.startsWith('spine_') || f.startsWith('cover_')) {
+                    fs.unlinkSync(path.join(dataDir, f));
+                }
+            });
+        } catch (e) {
+            console.warn('Error clearing physical image cache:', e);
+        }
+    },
+    getSpineCount: () => {
+        const res = db.prepare('SELECT COUNT(*) as count FROM album_spines').get();
+        return res ? res.count : 0;
     },
 
     // Token storage (encrypted)
